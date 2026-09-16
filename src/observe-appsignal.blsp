@@ -22,8 +22,8 @@
                       :env \"prod\" :revision (os/env \"FLY_MACHINE_VERSION\")})
 
   `:api-key` carries errors and metrics; `:log-key` carries logs — a log source of type
-  \"HTTP JSON\" in AppSignal's Logging settings. Leave `:log-key` out and logs are refused
-  locally (one warning), never sent under the wrong key."
+  \"HTTP JSON\" in AppSignal's Logging settings. Leave `:log-key` out and logs are not sent —
+  quietly, never under the wrong key."
   (:use observe :only [Provider])
   (:alias http)
   (:alias json)
@@ -69,11 +69,15 @@
 
 (impl Provider
   appsignal
+  ;; No log key means logs were not asked for — `:ok` and nothing sent, so a provider
+  ;; configured for errors and metrics alone is not a failure on every flush. A fan-out
+  ;; with a local provider then still keeps the lines.
   (ship-logs [p context records]
-    (post p
-      "/logs/json"
-      (get p :log-key)
-      (ndjson (map records (fn (record) (log-line p context record))))))
+    (if (nil? (get p :log-key))
+      :ok (post p
+        "/logs/json"
+        (get p :log-key)
+        (ndjson (map records (fn (record) (log-line p context record)))))))
   (ship-metrics [p context metrics]
     (post p
       "/metrics/json"

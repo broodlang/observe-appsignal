@@ -19,8 +19,8 @@ extension — three wire formats over `http`.
 
 AppSignal uses two keys and so does this: the app's **front-end API key** (App settings →
 Push & deploy) for `/errors` and `/metrics/json`, and a **log source key** (Logging → add a
-source of type *HTTP JSON*) for `/logs/json`. Without `:log-key`, logs are refused locally
-(one warning) and nothing is sent under the wrong key.
+source of type *HTTP JSON*) for `/logs/json`. Without `:log-key`, logs are not sent at all
+(quietly — pair with `observe-local` to keep them) and never under the wrong key.
 
 What lands where:
 

@@ -132,12 +132,10 @@
       (assert= 2 (count (requests r)))
       (assert= "https://appsignal-endpoint.net/errors?api_key=FRONT" (first (first (requests r))))))
 
-  (test "a missing log key refuses locally and sends nothing"
+  (test "a missing log key sends nothing and is not a failure"
     (let (r (recording 200)
           p (provider {:api-key "FRONT" :transport (get r :transport)}))
-      (let ([tag message] (observe/ship-logs p context [{:ts 1 :level :info :message "a" :meta {}}]))
-        (assert= :error tag)
-        (is (includes? message "no key")))
+      (assert= :ok (observe/ship-logs p context [{:ts 1 :level :info :message "a" :meta {}}]))
       (assert= 0 (count (requests r)))))
 
   (test "a non-2xx answer is an error naming the path and status"

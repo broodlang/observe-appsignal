@@ -9,4 +9,7 @@
     "AppSignal as an `observe` provider — logs, metrics and errors over AppSignal's public endpoints."
   :repository "https://github.com/broodlang/observe-appsignal"
   ;; Pinned to a commit until `observe` is on the registry; then `[observe :version "^0.1.0"]`.
-  :dependencies [[observe :git "https://github.com/broodlang/observe.git" :ref "3719ed2d88a8038e043a626bc7f959dd487a5b42"]])
+  :dependencies
+    [[observe
+       :git "https://github.com/broodlang/observe.git"
+       :ref "8ae735f4a22349a87c06c9be726e279dc7edc5e6"]])
