@@ -1,0 +1,193 @@
+;; observe-appsignal — AppSignal as an `observe` provider, over its public HTTP endpoints.
+;;
+;; AppSignal's language integrations run an agent binary next to the app; there is none for
+;; Brood, and there does not need to be: the public endpoints take logs, metrics and errors
+;; as plain HTTPS POSTs (https://docs.appsignal.com/api/public-endpoint/). This module is
+;; the three wire formats and nothing else — batching, buffering and the worker that makes
+;; the request are `observe`'s.
+;;
+;; Two keys, and it is the vendor's split, not ours: errors and metrics authenticate with
+;; the app's FRONT-END API key (App settings → Push & deploy), logs with a LOG SOURCE key
+;; (Logging → a source of type HTTP JSON). Naming them differently here is what stops a
+;; deploy from putting the wrong one in the wrong place and getting a 200 for it — every
+;; endpoint answers 200 for any well-formed body, "which doesn't mean the request is
+;; accepted". A wrong key is silent. A missing one is not: it is an error the shipper logs.
+(defmodule observe-appsignal
+  "AppSignal as an `observe` provider.
+
+      (observe/start {:provider (observe-appsignal/provider
+                                  {:api-key (os/env \"APPSIGNAL_FRONTEND_KEY\")
+                                   :log-key (os/env \"APPSIGNAL_LOG_KEY\")
+                                   :group \"hive\"})
+                      :env \"prod\" :revision (os/env \"FLY_MACHINE_VERSION\")})
+
+  `:api-key` carries errors and metrics; `:log-key` carries logs — a log source of type
+  \"HTTP JSON\" in AppSignal's Logging settings. Leave `:log-key` out and logs are refused
+  locally (one warning), never sent under the wrong key."
+  (:use observe :only [Provider])
+  (:alias http)
+  (:alias json)
+  (:alias url)
+  (:alias math)
+  (:alias string)
+  (:alias datetime))
+
+(def *endpoint* "https://appsignal-endpoint.net")
+
+;; ---- the provider value ---------------------------------------------------------------
+
+(defrecord appsignal (endpoint api-key log-key group transport))
+
+(defn provider (opts)
+  "A provider from `opts`: `:api-key` (front-end key: errors + metrics), `:log-key` (log
+  source key: logs), `:group` (the log group, default `\"app\"`), `:endpoint` (default
+  AppSignal's), `:transport` (a `(fn (url body) -> response)`, default `http/post` —
+  for a test)."
+  (appsignal (get opts :endpoint *endpoint*)
+    (get opts :api-key)
+    (get opts :log-key)
+    (get opts :group "app")
+    (get opts :transport http-post)))
+
+(defn- http-post (address body)
+  (http/post address body {:headers {"Content-Type" "application/json"}}))
+
+(defn address (p path key)
+  "The endpoint URL for `path`, authenticated with `key` as the `api_key` query parameter."
+  (str (get p :endpoint) path "?" (url/query-encode {"api_key" key})))
+
+(defn- post (p path key body)
+  "POST `body` to `path` under `key`; `:ok` on a 2xx, `[:error message]` otherwise."
+  (if (nil? key)
+    [:error (str "observe-appsignal: no key configured for " path)]
+    (let (resp ((get p :transport) (address p path key) body)
+          status (get resp :status 0))
+      (cond
+        (and (>= status 200) (< status 300)) :ok
+        (= status 0) [:error (str "observe-appsignal: " (get resp :error "no response"))]
+        :else [:error (str "observe-appsignal: " path " answered " status)]))))
+
+(impl Provider
+  appsignal
+  (ship-logs [p context records]
+    (post p
+      "/logs/json"
+      (get p :log-key)
+      (ndjson (map records (fn (record) (log-line p context record))))))
+  (ship-metrics [p context metrics]
+    (post p
+      "/metrics/json"
+      (get p :api-key)
+      (json/encode (vec (map metrics metric-json)))))
+  ;; One POST per error: the endpoint takes a single report per request.
+  (ship-errors [p context reports]
+    (fold reports
+      :ok (fn (outcome report)
+        (if (= outcome :ok)
+          (post p "/errors" (get p :api-key) (json/encode (error-json context report)))
+          outcome)))))
+
+;; ---- logs -------------------------------------------------------------------------------
+
+(def *severities* {:debug "debug" :info "info" :warn "warn" :error "error"})
+
+(def *max-attributes* 100)
+(def *max-attribute-key* 50)
+(def *max-attribute-value* 100)
+
+(defn rfc3339 (ms)
+  "Epoch milliseconds as the `YYYY-MM-DDThh:mm:ss.sssZ` the log endpoint wants."
+  (datetime/format (datetime/epoch-ms-> ms) "%Y-%m-%dT%H:%M:%S.%fZ"))
+
+(defn- clip (s n)
+  (if (> (string/length s) n) (string/substring s 0 n) s))
+
+(defn attribute-value (v)
+  "A log attribute value in the shape the endpoint keeps: a number or boolean as it is, a
+  string clipped to 100 characters, anything structured as its printed form (clipped) —
+  the endpoint drops a line whose attributes nest."
+  (cond
+    (or (int? v) (float? v) (bool? v)) v
+    (string? v) (clip v *max-attribute-value*)
+    (nil? v) "nil"
+    :else (clip (pr-str v) *max-attribute-value*)))
+
+(defn attributes (context meta)
+  "`meta` as the endpoint's `attributes`: keys as clipped strings, values scalar, at most
+  100 of them, with the run's `env` and `revision` first so the cap never loses them."
+  (let (run (seq/filter [["env" (get context :env)] ["revision" (get context :revision)]]
+              (fn (pair) (not (nil? (second pair)))))
+        own (map meta
+              (fn (pair)
+                [(clip (attribute-key (first pair)) *max-attribute-key*)
+                  (attribute-value (second pair))])))
+    (into {} (take (append run own) *max-attributes*))))
+
+(defn- attribute-key (k)
+  (cond
+    (keyword? k) (string/substring (str k) 1)
+    (string? k) k
+    :else (str k)))
+
+(defn log-line (p context record)
+  "One log record as the endpoint's JSON object."
+  {:timestamp (rfc3339 (get record :ts 0))
+   :group (get p :group)
+   :severity (get *severities* (get record :level) "info")
+   :message (str (get record :message ""))
+   :hostname (str (get context :hostname "unknown"))
+   :attributes (attributes context (get record :meta {}))})
+
+(defn ndjson (objects)
+  "The objects as newline-delimited JSON — the body shape the log endpoint requires."
+  (string/join (map objects json/encode) "\n"))
+
+;; ---- metrics ------------------------------------------------------------------------------
+
+(def *metric-types* {:gauge "gauge" :counter "counter" :timing "timing"})
+
+(defn- name-cp? (cp)
+  ;; `[a-zA-Z0-9-_]`, the endpoint's rule for a metric name
+  (or (and (>= cp 48) (<= cp 57))
+    (and (>= cp 65) (<= cp 90))
+    (and (>= cp 97) (<= cp 122))
+    (= cp 45)
+    (= cp 95)))
+
+(defn metric-name (name)
+  "`name` with every character outside `[a-zA-Z0-9-_]` replaced by `_`, so a name written
+  with a dot or a space is recorded rather than dropped."
+  (string/codepoints-> (map (string/->codepoints (str name)) (fn (cp) (if (name-cp? cp) cp 95)))))
+
+(defn string-tags (tags)
+  "Tags with string keys and string values, as the metric and error endpoints require."
+  (into {} (map (or tags {}) (fn (pair) [(attribute-key (first pair)) (str (second pair))]))))
+
+(defn metric-json (metric)
+  "One metric as the endpoint's JSON object."
+  {:name (metric-name (get metric :name))
+   :metricType (get *metric-types* (get metric :kind) "gauge")
+   :value (get metric :value 0)
+   :tags (string-tags (get metric :tags))})
+
+;; ---- errors ---------------------------------------------------------------------------------
+
+(defn error-json (context report)
+  "One error report as the endpoint's JSON object. `revision` and the environment come from
+  the run's context; `language` is what AppSignal shows as the integration."
+  (let (environment (into {}
+                      (seq/filter [["hostname" (get context :hostname)]
+                                    ["env" (get context :env)]
+                                    ["app" (get context :app)]]
+                        (fn (pair) (not (nil? (second pair)))))))
+    (merge {:timestamp (math/quot (get report :ts 0) 1000)
+            :namespace (get report :namespace "app")
+            :error {:name (get report :name "error")
+                    :message (str (get report :message ""))
+                    :backtrace (vec (get report :backtrace []))}
+            :tags (string-tags (get report :tags))
+            :params (string-tags (get report :params))
+            :environment environment
+            :language "brood"}
+      (if (get report :action) {:action (get report :action)} {})
+      (if (get context :revision) {:revision (str (get context :revision))} {}))))

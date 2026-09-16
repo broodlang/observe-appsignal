@@ -1,0 +1,170 @@
+;; The three wire formats, and the provider against a recording transport — what URL and
+;; body each batch becomes. No network: `:transport` is a function.
+(defmodule observe-appsignal-test
+  (:use test)
+  (:use observe-appsignal)
+  (:alias observe)
+  (:alias json)
+  (:alias gen))
+
+;; A transport that records every request it was handed and answers `status`.
+(gen/defserver recorder
+  (requests)
+  (cast [:request address body] (conj requests [address body]))
+  (query :requests requests))
+
+(defn- recording (status)
+  (let (pid (gen/start recorder []))
+    {:pid pid
+     :transport (fn (address body)
+                  (gen/cast pid [:request address body])
+                  {:status status :headers {} :body #b"" :error "refused"})}))
+
+(defn- requests (r) (gen/call (get r :pid) :requests))
+
+(def- context {:hostname "web-1" :env "prod" :revision "abc123" :app "hive"})
+
+(describe "log-line"
+  (test "the endpoint's five required fields plus attributes"
+    (let (p (provider {:log-key "L" :group "hive"})
+          line (log-line p
+                 context
+                 {:ts 1700000000123 :level :warn :message "disk low" :meta {:path "/x" :n 3}}))
+      (assert= "2023-11-14T22:13:20.123Z" (get line :timestamp))
+      (assert= "hive" (get line :group))
+      (assert= "warn" (get line :severity))
+      (assert= "disk low" (get line :message))
+      (assert= "web-1" (get line :hostname))
+      (assert= {"env" "prod" "revision" "abc123" "path" "/x" "n" 3} (get line :attributes))))
+
+  (test "an unknown level is info"
+    (assert= "info"
+      (get (log-line (provider {}) {} {:ts 0 :level :notice :message "x" :meta {}}) :severity)))
+
+  (test "attributes stay scalar and short"
+    (let (long (apply str (map (range 0 150) (fn (_) "x")))
+          attrs (attributes {} {:nested {:a 1} :list [1 2] :long long :flag true :none nil}))
+      (assert= "{:a 1}" (get attrs "nested"))
+      (assert= "[1 2]" (get attrs "list"))
+      (assert= 100 (string/length (get attrs "long")))
+      (assert= true (get attrs "flag"))
+      (assert= "nil" (get attrs "none"))))
+
+  (test "the run's env and revision survive the attribute cap"
+    (let (many (into {} (map (range 0 120) (fn (i) [(str "k" i) i])))
+          attrs (attributes context many))
+      (assert= 100 (count attrs))
+      (assert= "prod" (get attrs "env"))
+      (assert= "abc123" (get attrs "revision"))))
+
+  (test "ndjson is one object per line"
+    (assert= "{\"a\":1}\n{\"b\":2}" (ndjson [{:a 1} {:b 2}]))))
+
+(describe "metric-json"
+  (test "kind becomes metricType and tags become strings"
+    (assert= {:name "request_duration"
+              :metricType "timing"
+              :value 12
+              :tags {"route" "/x" "status" "200"}}
+      (metric-json {:name "request_duration"
+                    :kind :timing
+                    :value 12
+                    :tags {:route "/x" :status 200}})))
+
+  (test "a name outside [a-zA-Z0-9-_] is repaired rather than dropped"
+    (assert= "pool_free_conns" (metric-name "pool.free conns"))
+    (assert= "ok-name_1" (metric-name "ok-name_1"))))
+
+(describe "error-json"
+  (test "the endpoint's shape, with the context as environment and revision"
+    (let (e (error-json context
+              {:ts 1700000000999
+               :name "db/insert"
+               :message "db/insert: down"
+               :backtrace ["a" "b"]
+               :action "POST /publish"
+               :namespace "web"
+               :tags {:method "POST"}
+               :params {}}))
+      (assert= 1700000000 (get e :timestamp))
+      (assert= "POST /publish" (get e :action))
+      (assert= "web" (get e :namespace))
+      (assert= {:name "db/insert" :message "db/insert: down" :backtrace ["a" "b"]} (get e :error))
+      (assert= "abc123" (get e :revision))
+      (assert= {"hostname" "web-1" "env" "prod" "app" "hive"} (get e :environment))
+      (assert= {"method" "POST"} (get e :tags))
+      (assert= "brood" (get e :language))))
+
+  (test "no action and no revision means no such keys"
+    (let (e (error-json {} {:ts 0 :name "error" :message "x"}))
+      (is (not (contains? e :action)))
+      (is (not (contains? e :revision))))))
+
+(describe "shipping through the transport"
+  (test "logs go to /logs/json under the log key, as NDJSON"
+    (let (r (recording 200)
+          p (provider {:api-key "FRONT" :log-key "LOGS" :transport (get r :transport)}))
+      (assert= :ok
+        (observe/ship-logs p
+          context
+          [{:ts 1 :level :info :message "a" :meta {}}
+            {:ts 2 :level :info :message "b" :meta {}}]))
+      (let ([address body] (first (requests r)))
+        (assert= "https://appsignal-endpoint.net/logs/json?api_key=LOGS" address)
+        (assert= 2 (count (string/split body "\n")))
+        (assert= "a" (get (json/decode (first (string/split body "\n"))) :message)))))
+
+  (test "metrics go to /metrics/json under the front-end key, as one array"
+    (let (r (recording 200)
+          p (provider {:api-key "FRONT" :transport (get r :transport)}))
+      (assert= :ok (observe/ship-metrics p context [{:name "x" :kind :gauge :value 1 :tags {}}]))
+      (let ([address body] (first (requests r)))
+        (assert= "https://appsignal-endpoint.net/metrics/json?api_key=FRONT" address)
+        (assert= [{:name "x" :metricType "gauge" :value 1 :tags {}}] (json/decode body)))))
+
+  (test "errors go to /errors one request each"
+    (let (r (recording 200)
+          p (provider {:api-key "FRONT" :transport (get r :transport)}))
+      (assert= :ok
+        (observe/ship-errors p
+          context
+          [{:ts 0 :name "a" :message "a"} {:ts 0 :name "b" :message "b"}]))
+      (assert= 2 (count (requests r)))
+      (assert= "https://appsignal-endpoint.net/errors?api_key=FRONT" (first (first (requests r))))))
+
+  (test "a missing log key refuses locally and sends nothing"
+    (let (r (recording 200)
+          p (provider {:api-key "FRONT" :transport (get r :transport)}))
+      (let ([tag message] (observe/ship-logs p context [{:ts 1 :level :info :message "a" :meta {}}]))
+        (assert= :error tag)
+        (is (includes? message "no key")))
+      (assert= 0 (count (requests r)))))
+
+  (test "a non-2xx answer is an error naming the path and status"
+    (let (r (recording 503)
+          p (provider {:api-key "FRONT" :transport (get r :transport)}))
+      (assert= [:error "observe-appsignal: /metrics/json answered 503"]
+        (observe/ship-metrics p context [{:name "x" :kind :gauge :value 1}]))))
+
+  (test "no response at all is the transport's error"
+    (let (r (recording 0)
+          p (provider {:api-key "FRONT" :transport (get r :transport)}))
+      (assert= [:error "observe-appsignal: refused"]
+        (observe/ship-metrics p context [{:name "x" :kind :gauge :value 1}]))))
+
+  (test "the api key is query-encoded"
+    (assert= "https://appsignal-endpoint.net/errors?api_key=a%2Fb%3Dc"
+      (address (provider {}) "/errors" "a/b=c"))))
+
+(describe "end to end with observe's shipper"
+  :isolated (test "a gauge recorded through observe lands on the metrics endpoint"
+    (let (r (recording 200)
+          p (provider {:api-key "FRONT" :transport (get r :transport)}))
+      (observe/start {:provider p :flush-ms 60000 :env "test"})
+      (observe/gauge "pool_size" 5 {:pool "pg"})
+      (is (observe/flush-sync))
+      (observe/stop)
+      (let ([address body] (first (requests r)))
+        (is (includes? address "/metrics/json"))
+        (assert= "pool_size" (get (first (json/decode body)) :name))
+        (assert= {:pool "pg"} (get (first (json/decode body)) :tags))))))
