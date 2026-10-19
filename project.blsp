@@ -4,8 +4,8 @@
 (project
   :name "observe-appsignal"
   :version "0.1.1"
-  :brood ">= 0.40.0"
+  :brood ">= 0.42.0"
   :description
     "AppSignal as an `observe` provider — logs, metrics and errors over AppSignal's public endpoints."
   :repository "https://github.com/broodlang/observe-appsignal"
-  :dependencies [[observe :version "^0.1.0"]])
+  :dependencies [[observe :version "^0.1.2"]])
