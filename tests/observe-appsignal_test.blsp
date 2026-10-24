@@ -166,3 +166,16 @@
         (is (includes? address "/metrics/json"))
         (assert= "pool_size" (get (first (json/decode body)) :name))
         (assert= {:pool "pg"} (get (first (json/decode body)) :tags))))))
+
+(describe "settings"
+  (test "nothing set is off" (assert= nil (settings {})))
+  (test "a blank key is unset, not a key"
+    (assert= nil (settings {"APPSIGNAL_FRONTEND_KEY" "  "})))
+  (test "a log key alone is not appsignal" (assert= nil (settings {"APPSIGNAL_LOG_KEY" "L"})))
+  (test "the front-end key alone: errors and metrics, no logs"
+    (assert= {:api-key "F" :log-key nil} (settings {"APPSIGNAL_FRONTEND_KEY" "F"})))
+  (test "both keys"
+    (assert= {:api-key "F" :log-key "L"}
+      (settings {"APPSIGNAL_FRONTEND_KEY" " F " "APPSIGNAL_LOG_KEY" "L"})))
+  (test "every variable settings reads is one from-environment collects"
+    (for (var ["APPSIGNAL_FRONTEND_KEY" "APPSIGNAL_LOG_KEY"]) (is (includes? *variables* var)))))

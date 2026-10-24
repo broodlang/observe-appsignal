@@ -30,7 +30,9 @@
   (:alias url)
   (:alias math)
   (:alias string)
-  (:alias datetime))
+  (:alias datetime)
+  (:alias log)
+  (:alias os))
 
 (def *endpoint* "https://appsignal-endpoint.net")
 
@@ -48,6 +50,40 @@
     (get opts :log-key)
     (get opts :group "app")
     (get opts :transport http-post)))
+
+(def *variables*
+  ;; Every variable `settings` reads.
+  ["APPSIGNAL_FRONTEND_KEY" "APPSIGNAL_LOG_KEY"])
+
+(defn- env-text (env variable)
+  (let (raw (get env variable))
+    (when (and (string? raw) (not (string/blank? raw))) (string/trim raw))))
+
+(defn settings (env)
+  "The keys from an environment map (`var → value`): `{:api-key :log-key}` from
+  `$APPSIGNAL_FRONTEND_KEY` and `$APPSIGNAL_LOG_KEY`, or nil when the front-end key is unset
+  or blank (a blank is what a deploy tool writes for a secret it could not find, and it must
+  read as off, not as a key). A log key alone is not AppSignal.
+
+      (observe-appsignal/settings {\"APPSIGNAL_FRONTEND_KEY\" \"F\"}) ;=> {:api-key \"F\" :log-key nil}"
+  (let (api-key (env-text env "APPSIGNAL_FRONTEND_KEY"))
+    (when api-key {:api-key api-key :log-key (env-text env "APPSIGNAL_LOG_KEY")})))
+
+(defn from-environment (group)
+  "The provider from the process environment's keys (see `settings`), filing logs under
+  `group` — or nil when AppSignal is not keyed, which `observe/boot` drops. Either way the
+  log says what goes to AppSignal: nothing, errors and metrics without logs, or all three."
+  (let (found (settings (into {} (map *variables* (fn (variable) [variable (os/env variable)])))))
+    (cond
+      (nil? found)
+        (do
+          (log/warn "monitoring: APPSIGNAL_FRONTEND_KEY is not set; nothing goes to AppSignal")
+          nil)
+      (nil? (get found :log-key))
+        (do
+          (log/warn "monitoring: APPSIGNAL_LOG_KEY is not set; errors and metrics go to AppSignal, logs do not")
+          (provider (assoc found :group group)))
+      :else (provider (assoc found :group group)))))
 
 (defn- http-post (address body)
   (http/post address body {:headers {"Content-Type" "application/json"}}))
