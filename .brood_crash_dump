@@ -1,0 +1,12 @@
+
+=== brood process death ===
+version: 0.47.0 (db2cc7dc-dirty)
+when:    2026-10-28 22:55:19 UTC (1793228119431 ms since epoch)
+process: observe (pid 5)
+reason:  _deps/observe/src/observe.blsp:154:31: unbound error: unbound symbol: disj — renamed to set/disj (ADR-506)
+
+=== brood process death ===
+version: 0.47.0 (db2cc7dc-dirty)
+when:    2026-10-28 22:55:23 UTC (1793228123402 ms since epoch)
+process: observe (pid 5)
+reason:  _deps/observe/src/observe.blsp:154:31: unbound error: unbound symbol: disj — renamed to set/disj (ADR-506)
