@@ -108,19 +108,19 @@
   ;; No log key means logs were not asked for — `:ok` and nothing sent, so a provider
   ;; configured for errors and metrics alone is not a failure on every flush. A fan-out
   ;; with a local provider then still keeps the lines.
-  (ship-logs [p context records]
+  (ship-logs (p context records)
     (if (nil? (get p :log-key))
       :ok (post p
         "/logs/json"
         (get p :log-key)
         (ndjson (map records (fn (record) (log-line p context record)))))))
-  (ship-metrics [p context metrics]
+  (ship-metrics (p context metrics)
     (post p
       "/metrics/json"
       (get p :api-key)
       (json/encode (vec (map metrics metric-json)))))
   ;; One POST per error: the endpoint takes a single report per request.
-  (ship-errors [p context reports]
+  (ship-errors (p context reports)
     (fold reports
       :ok (fn (outcome report)
         (if (= outcome :ok)
