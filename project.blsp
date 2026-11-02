@@ -3,9 +3,9 @@
 ;; `observe`'s; this package is the three wire formats.
 (project
   :name "observe-appsignal"
-  :version "0.2.1"
+  :version "0.2.2"
   :brood ">= 0.49.0"
   :description
     "AppSignal as an `observe` provider — logs, metrics and errors over AppSignal's public endpoints."
   :repository "https://github.com/broodlang/observe-appsignal"
-  :dependencies [[observe :version "^0.2.1"]])
+  :dependencies [[observe :version "^0.2.3"]])
