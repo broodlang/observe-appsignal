@@ -83,7 +83,7 @@
         (do
           (log/warn "monitoring: APPSIGNAL_LOG_KEY is not set; errors and metrics go to AppSignal, logs do not")
           (provider (assoc found :group group)))
-      :else (provider (assoc found :group group)))))
+      else (provider (assoc found :group group)))))
 
 (defn- http-post (address body)
   (http/post address body {:headers {"Content-Type" "application/json"}}))
@@ -101,7 +101,7 @@
       (cond
         (and (>= status 200) (< status 300)) :ok
         (= status 0) [:error (str "observe-appsignal: " (get resp :error "no response"))]
-        :else [:error (str "observe-appsignal: " path " answered " status)]))))
+        else [:error (str "observe-appsignal: " path " answered " status)]))))
 
 (impl Provider
   appsignal
@@ -150,7 +150,7 @@
     (or (int? v) (float? v) (bool? v)) v
     (string? v) (clip v *max-attribute-value*)
     (nil? v) "nil"
-    :else (clip (pr-str v) *max-attribute-value*)))
+    else (clip (pr-str v) *max-attribute-value*)))
 
 (defn attributes (context meta)
   "`meta` as the endpoint's `attributes`: keys as clipped strings, values scalar, at most
@@ -167,7 +167,7 @@
   (cond
     (keyword? k) (string/substring (str k) 1)
     (string? k) k
-    :else (str k)))
+    else (str k)))
 
 (defn log-line (p context record)
   "One log record as the endpoint's JSON object."
