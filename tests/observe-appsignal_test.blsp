@@ -18,11 +18,22 @@
     {:pid pid
      :transport (fn (address body)
                   (gen/cast pid [:request address body])
-                  {:status status :headers {} :body #b"" :error "refused"})}))
+                  (if (= status 0) (failure "refused") {:status status :headers {} :body #b""}))}))
 
 (defn- requests (r) (gen/call (get r :pid) :requests))
 
 (def- context {:hostname "web-1" :env "prod" :revision "abc123" :app "hive"})
+
+(defn- decoded-map (text -> map)
+  "`text` decoded as a JSON object, raising on anything else — so an assertion reading into
+  it fails on a wrong body, not on a scalar."
+  (let (value (json/decode text))
+    (if (map? value) value (error "expected a JSON object, got " (pr-str value)))))
+
+(defn- decoded-vector (text -> vector)
+  "`text` decoded as a JSON array, raising on anything else."
+  (let (value (json/decode text))
+    (if (vector? value) value (error "expected a JSON array, got " (pr-str value)))))
 
 (describe "log-line"
   (test "the endpoint's five required fields plus attributes"
@@ -46,7 +57,7 @@
           attrs (attributes {} {:nested {:a 1} :list [1 2] :long long :flag true :none nil}))
       (assert= "{:a 1}" (get attrs "nested"))
       (assert= "[1 2]" (get attrs "list"))
-      (assert= 100 (string/length (get attrs "long")))
+      (assert= 100 (count (get attrs "long")))
       (assert= true (get attrs "flag"))
       (assert= "nil" (get attrs "none"))))
 
@@ -112,7 +123,7 @@
       (let ([address body] (first (requests r)))
         (assert= "https://appsignal-endpoint.net/logs/json?api_key=LOGS" address)
         (assert= 2 (count (string/split body "\n")))
-        (assert= "a" (get (json/decode (first (string/split body "\n"))) :message)))))
+        (assert= "a" (get (decoded-map (first (string/split body "\n"))) :message)))))
 
   (test "metrics go to /metrics/json under the front-end key, as one array"
     (let (r (recording 200)
@@ -164,8 +175,8 @@
       (observe/stop)
       (let ([address body] (first (requests r)))
         (is (includes? address "/metrics/json"))
-        (assert= "pool_size" (get (first (json/decode body)) :name))
-        (assert= {:pool "pg"} (get (first (json/decode body)) :tags))))))
+        (assert= "pool_size" (get (first (decoded-vector body)) :name))
+        (assert= {:pool "pg"} (get (first (decoded-vector body)) :tags))))))
 
 (describe "settings"
   (test "nothing set is off" (assert= nil (settings {})))

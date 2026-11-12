@@ -96,12 +96,12 @@
   "POST `body` to `path` under `key`; `:ok` on a 2xx, `[:error message]` otherwise."
   (if (nil? key)
     [:error (str "observe-appsignal: no key configured for " path)]
-    (let (resp ((get p :transport) (address p path key) body)
-          status (get resp :status 0))
+    (let (resp ((get p :transport) (address p path key) body))
       (cond
-        (and (>= status 200) (< status 300)) :ok
-        (= status 0) [:error (str "observe-appsignal: " (get resp :error "no response"))]
-        else [:error (str "observe-appsignal: " path " answered " status)]))))
+        ;; no response at all: `http/post`'s failure for a refused connection or a timeout
+        (failure? resp) [:error (str "observe-appsignal: " (error-message resp))]
+        (and (>= (get resp :status) 200) (< (get resp :status) 300)) :ok
+        else [:error (str "observe-appsignal: " path " answered " (get resp :status))]))))
 
 (impl Provider
   appsignal
@@ -140,7 +140,7 @@
   (datetime/format (datetime/epoch-ms-> ms) "%Y-%m-%dT%H:%M:%S.%fZ"))
 
 (defn- clip (s n)
-  (if (> (string/length s) n) (string/substring s 0 n) s))
+  (if (> (count s) n) (string/substring s 0 n) s))
 
 (defn attribute-value (v)
   "A log attribute value in the shape the endpoint keeps: a number or boolean as it is, a
